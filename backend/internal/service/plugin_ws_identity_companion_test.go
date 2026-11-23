@@ -19,7 +19,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func testSignedWSCompanion(t *testing.T, validDigest bool) (*PluginManager, *pluginRuntime) {
+func testSignedWSCompanion(t *testing.T, validDigest, global bool) (*PluginManager, *pluginRuntime) {
 	t.Helper()
 	fixtureDir := os.Getenv("SUB2API_TEST_WS_COMPANION_DIR")
 	if fixtureDir == "" {
@@ -33,8 +33,11 @@ func testSignedWSCompanion(t *testing.T, validDigest bool) (*PluginManager, *plu
 	require.NoError(t, err)
 	cfg.Plugins.TrustedPublishers["sp985-regression"] = strings.TrimSpace(string(pub))
 	cfg.Plugins.OpenAIWSIdentityEnabled = true
-	cfg.Plugins.OpenAIWSIdentityCanaryAccountID = 901
-	cfg.Plugins.OpenAIWSIdentityCanaryAPIKeyID = 101
+	cfg.Plugins.OpenAIWSIdentityCompanionGlobal = global
+	if !global {
+		cfg.Plugins.OpenAIWSIdentityCanaryAccountID = 901
+		cfg.Plugins.OpenAIWSIdentityCanaryAPIKeyID = 101
+	}
 	cfg.Plugins.OpenAIWSIdentityCompanionPackage = filepath.Join(fixtureDir, "native.s2plugin")
 	archive, err := os.ReadFile(cfg.Plugins.OpenAIWSIdentityCompanionPackage)
 	require.NoError(t, err)
@@ -91,7 +94,7 @@ func assertLegacySignedHTTPForward(t *testing.T, m *PluginManager, expected *plu
 }
 
 func TestSignedWSIdentityCompanionKeepsLegacyHTTPAndStopsOnConfigChange(t *testing.T) {
-	m, legacy := testSignedWSCompanion(t, true)
+	m, legacy := testSignedWSCompanion(t, true, false)
 	require.Nil(t, legacy.wsIdentity, "legacy archive must remain HTTP-only")
 	require.NotNil(t, legacy.wsCompanion)
 	companion := legacy.wsCompanion.runtime
@@ -133,6 +136,40 @@ func TestSignedWSIdentityCompanionKeepsLegacyHTTPAndStopsOnConfigChange(t *testi
 	require.FileExists(t, legacy.installation.BinaryPath, "retiring companion preserves the legacy install")
 }
 
+func TestSignedWSIdentityCompanionGlobalUsesTwoAccountsAndKeepsHTTP(t *testing.T) {
+	m, legacy := testSignedWSCompanion(t, true, true)
+	require.NotNil(t, legacy.wsCompanion)
+	require.Equal(t, "0.5.8", legacy.wsCompanion.runtime.installation.Version)
+	for _, tc := range []struct{ accountID, keyID int64 }{{901, 101}, {902, 102}} {
+		fixture := newWSIdentityWireFixture(t)
+		fixture.cfg.Plugins = m.cfg.Plugins
+		fixture.account.ID = tc.accountID
+		fixture.svc.pluginManager = m
+		client, done := fixture.startForKey(t, tc.keyID)
+		requireWSIdentityCompletion(t, client, "resp_native_1")
+		_ = waitWSIdentityFixtureValue(t, fixture.handshakes)
+		first := waitWSIdentityFixtureValue(t, fixture.frames)
+		id, err := uuid.Parse(gjson.GetBytes(first, "client_metadata.session_id").String())
+		require.NoError(t, err)
+		require.Equal(t, uuid.Version(7), id.Version())
+		require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(wsIdentityContinuation)))
+		requireWSIdentityCompletion(t, client, "resp_native_2")
+		second := waitWSIdentityFixtureValue(t, fixture.frames)
+		require.Equal(t, id.String(), gjson.GetBytes(second, "client_metadata.session_id").String())
+		require.Equal(t, "resp_native_1", gjson.GetBytes(second, "previous_response_id").String())
+		require.Empty(t, fixture.handshakes)
+		_ = client.Close(coderws.StatusNormalClosure, "done")
+		_ = waitWSIdentityFixtureValue(t, done)
+	}
+	assertLegacySignedHTTPForward(t, m, legacy)
+}
+
+func TestSignedWSIdentityCompanionGlobalBadDigestLeavesLegacyHTTP(t *testing.T) {
+	m, legacy := testSignedWSCompanion(t, false, true)
+	require.Nil(t, legacy.wsCompanion)
+	assertLegacySignedHTTPForward(t, m, legacy)
+}
+
 func TestWSIdentityCompanionArchiveIsBoundToDigestAndSize(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "archive")
@@ -152,7 +189,7 @@ func TestWSIdentityCompanionArchiveIsBoundToDigestAndSize(t *testing.T) {
 }
 
 func TestSignedWSIdentityCompanionBadDigestLeavesLegacyHTTP(t *testing.T) {
-	m, legacy := testSignedWSCompanion(t, false)
+	m, legacy := testSignedWSCompanion(t, false, false)
 	require.Nil(t, legacy.wsCompanion)
 	assertLegacySignedHTTPForward(t, m, legacy)
 }

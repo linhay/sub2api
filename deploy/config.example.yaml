@@ -1120,7 +1120,11 @@ plugins:
   # 原生 WS 灰度须同时填写上游账号和已鉴权 Key 的正整数 ID；不改 HTTP 插件绑定。
   openai_ws_identity_canary_account_id: 0
   openai_ws_identity_canary_api_key_id: 0
-  # Candidate-local signed archive, pinned by SHA-256. Leave both empty unless testing the exact pair above.
+  # Explicitly enable the signed companion for all otherwise eligible native WS OAuth traffic.
+  # Keep both canary IDs zero in global mode. Authentication, account routing, and HTTP binding are unchanged.
+  # 全量启用仅取消 companion 灰度白名单，不改变鉴权、账号路由或 HTTP 绑定。
+  openai_ws_identity_companion_global: false
+  # Candidate-local signed archive, pinned by SHA-256. Require an exact canary pair or explicit global opt-in.
   # The companion never replaces the registered HTTP plugin or receives host account services.
   # 仅候选 App 本地读取；不会替换共享登记的 HTTP 插件或取得宿主账号服务。
   openai_ws_identity_companion_package: ""

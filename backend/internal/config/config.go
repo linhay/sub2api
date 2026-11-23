@@ -177,6 +177,7 @@ type PluginConfig struct {
 	OpenAIWSIdentityEnabled          bool              `mapstructure:"openai_ws_identity_enabled"`
 	OpenAIWSIdentityCanaryAccountID  int64             `mapstructure:"openai_ws_identity_canary_account_id"`
 	OpenAIWSIdentityCanaryAPIKeyID   int64             `mapstructure:"openai_ws_identity_canary_api_key_id"`
+	OpenAIWSIdentityCompanionGlobal  bool              `mapstructure:"openai_ws_identity_companion_global"`
 	OpenAIWSIdentityCompanionPackage string            `mapstructure:"openai_ws_identity_companion_package"`
 	OpenAIWSIdentityCompanionSHA256  string            `mapstructure:"openai_ws_identity_companion_sha256"`
 	TrustedPublishers                map[string]string `mapstructure:"trusted_publishers"`
@@ -191,8 +192,11 @@ func (c PluginConfig) AllowsOpenAIWSIdentity(accountID, apiKeyID int64) bool {
 	if !c.OpenAIWSIdentityEnabled || accountID <= 0 || apiKeyID <= 0 {
 		return false
 	}
+	if c.OpenAIWSIdentityCompanionGlobal {
+		return c.OpenAIWSIdentityCompanionConfigured() && !c.hasOpenAIWSIdentityCanary()
+	}
 	if !c.hasOpenAIWSIdentityCanary() {
-		return true
+		return !c.OpenAIWSIdentityCompanionConfigured()
 	}
 	return accountID == c.OpenAIWSIdentityCanaryAccountID && apiKeyID == c.OpenAIWSIdentityCanaryAPIKeyID
 }
@@ -2480,6 +2484,7 @@ func setDefaults() {
 	viper.SetDefault("plugins.openai_ws_identity_enabled", false)
 	viper.SetDefault("plugins.openai_ws_identity_canary_account_id", int64(0))
 	viper.SetDefault("plugins.openai_ws_identity_canary_api_key_id", int64(0))
+	viper.SetDefault("plugins.openai_ws_identity_companion_global", false)
 	viper.SetDefault("plugins.openai_ws_identity_companion_package", "")
 	viper.SetDefault("plugins.openai_ws_identity_companion_sha256", "")
 	viper.SetDefault("plugins.trusted_publishers", map[string]string{})
@@ -2863,13 +2868,17 @@ func (c *Config) Validate() error {
 	if c.Plugins.hasOpenAIWSIdentityCanary() && (c.Plugins.OpenAIWSIdentityCanaryAccountID <= 0 || c.Plugins.OpenAIWSIdentityCanaryAPIKeyID <= 0) {
 		return fmt.Errorf("plugins.openai_ws_identity_canary_account_id and plugins.openai_ws_identity_canary_api_key_id must both be positive when a canary scope is set")
 	}
+	// Global scope must be an explicit choice, never an omitted canary.
+	if c.Plugins.OpenAIWSIdentityCompanionGlobal && (!c.Plugins.OpenAIWSIdentityCompanionConfigured() || c.Plugins.hasOpenAIWSIdentityCanary()) {
+		return fmt.Errorf("plugins.openai_ws_identity_companion_global requires a companion package and cannot be combined with canary IDs")
+	}
 	if c.Plugins.OpenAIWSIdentityCompanionConfigured() {
 		digest := c.Plugins.OpenAIWSIdentityCompanionSHA256
 		if decoded, err := hex.DecodeString(digest); err != nil || len(decoded) != 32 || digest != strings.ToLower(digest) || !filepath.IsAbs(c.Plugins.OpenAIWSIdentityCompanionPackage) {
 			return fmt.Errorf("plugins.openai_ws_identity_companion_package and plugins.openai_ws_identity_companion_sha256 require an absolute path and its lowercase SHA-256")
 		}
-		if !c.Plugins.hasOpenAIWSIdentityCanary() {
-			return fmt.Errorf("plugins.openai_ws_identity_companion_package requires an explicit account and API key canary")
+		if !c.Plugins.hasOpenAIWSIdentityCanary() && !c.Plugins.OpenAIWSIdentityCompanionGlobal {
+			return fmt.Errorf("plugins.openai_ws_identity_companion_package requires an explicit account and API key canary or companion_global opt-in")
 		}
 	}
 	if c.Plugins.MaxUploadBytes <= 0 || c.Plugins.MaxUploadBytes > 1024*1024*1024 {
